@@ -1,0 +1,145 @@
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("PostgreSQL Database Server")
+
+def get_connection():
+    return psycopg2.connect(
+        host=os.getenv("POSTGRES_HOST"),
+        port=os.getenv("POSTGRES_PORT", "5432"),
+        database=os.getenv("POSTGRES_DB"),
+        user=os.getenv("POSTGRES_USER"),
+        password=os.getenv("POSTGRES_PASSWORD")
+    )
+
+@mcp.tool()
+def query_data(sql: str) -> str:
+    """Execute SELECT query and return results in table format"""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            columns = [desc[0] for desc in cursor.description]
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return "No results"
+            
+            col_widths = [max(len(str(col)), max(len(str(row[i])) for row in rows)) for i, col in enumerate(columns)]
+            
+            header = " | ".join(col.ljust(w) for col, w in zip(columns, col_widths))
+            separator = "-+-".join("-" * w for w in col_widths)
+            data_rows = "\n".join(" | ".join(str(val).ljust(w) for val, w in zip(row, col_widths)) for row in rows)
+            
+            return f"{header}\n{separator}\n{data_rows}"
+
+@mcp.tool()
+def insert_data(table: str, columns: str, values: str) -> str:
+    """Insert data into table. columns: 'col1,col2', values: 'val1,val2'"""
+    sql = f"INSERT INTO {table} ({columns}) VALUES ({values})"
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            conn.commit()
+            return f"Inserted {cursor.rowcount} row(s)"
+
+@mcp.tool()
+def update_data(table: str, set_clause: str, where_clause: str = "") -> str:
+    """Update data. set_clause: 'col1=val1,col2=val2', where_clause: 'id=1'"""
+    sql = f"UPDATE {table} SET {set_clause}"
+    if where_clause:
+        sql += f" WHERE {where_clause}"
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            conn.commit()
+            return f"Updated {cursor.rowcount} row(s)"
+
+@mcp.tool()
+def delete_data(table: str, where_clause: str = "") -> str:
+    """Delete data from table. where_clause: 'id=1'"""
+    sql = f"DELETE FROM {table}"
+    if where_clause:
+        sql += f" WHERE {where_clause}"
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            conn.commit()
+            return f"Deleted {cursor.rowcount} row(s)"
+
+@mcp.tool()
+def inspect_table(table_name: str) -> str:
+    """Get table structure and metadata"""
+    sql = f"""
+    SELECT column_name, data_type, character_maximum_length, is_nullable, column_default
+    FROM information_schema.columns
+    WHERE table_name = '{table_name.lower()}'
+    ORDER BY ordinal_position
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return f"Table {table_name} not found"
+            
+            result = f"Table: {table_name}\n\n"
+            for row in rows:
+                col_type = row[1]
+                if row[2]:
+                    col_type += f"({row[2]})"
+                result += f"{row[0]}: {col_type} {'NULL' if row[3] == 'YES' else 'NOT NULL'}"
+                if row[4]:
+                    result += f" DEFAULT {row[4]}"
+                result += "\n"
+            return result
+
+@mcp.tool()
+def inspect_package(schema_name: str) -> str:
+    """Get schema functions and procedures"""
+    sql = f"""
+    SELECT routine_name, routine_type
+    FROM information_schema.routines
+    WHERE routine_schema = '{schema_name.lower()}'
+    ORDER BY routine_name
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return f"Schema {schema_name} not found or has no routines"
+            
+            result = f"Schema: {schema_name}\n\n"
+            for row in rows:
+                result += f"- {row[0]} ({row[1]})\n"
+            return result
+
+@mcp.tool()
+def inspect_procedure(procedure_name: str) -> str:
+    """Get procedure/function parameters"""
+    sql = f"""
+    SELECT parameter_name, data_type, parameter_mode
+    FROM information_schema.parameters
+    WHERE specific_name = '{procedure_name.lower()}'
+    ORDER BY ordinal_position
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return f"Procedure {procedure_name} not found"
+            
+            result = f"Procedure: {procedure_name}\n\n"
+            for row in rows:
+                param_name = row[0] if row[0] else "RETURN"
+                result += f"{param_name}: {row[1]} ({row[2]})\n"
+            return result
+
+if __name__ == "__main__":
+    mcp.run()
